@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment and secrets
+.env
+.env.*
+
+# Model weights (keep a small demo pickle if added later)
+*.pt
+*.pth
+*.onnx
+*.pkl
+!app/models/demo.pkl
+
+# Evaluation dumps
+evaluation_results.csv
+
+# Sample photos (folder is kept via sample_images/.gitkeep)
+sample_images/*.jpg
+sample_images/*.jpeg
+sample_images/*.JPG
+
+# Tooling / OS
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
