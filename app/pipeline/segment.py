@@ -9,9 +9,9 @@ import numpy as np
 
 # HSV skin ranges in OpenCV (H: 0–180). Covers typical light/medium skin;
 # a second band catches reddish hues that wrap around H=0.
-_SKIN_HSV_LOWER_1 = np.array([0, 30, 60], dtype=np.uint8)
+_SKIN_HSV_LOWER_1 = np.array([0, 20, 40], dtype=np.uint8)
 _SKIN_HSV_UPPER_1 = np.array([25, 255, 255], dtype=np.uint8)
-_SKIN_HSV_LOWER_2 = np.array([160, 30, 60], dtype=np.uint8)
+_SKIN_HSV_LOWER_2 = np.array([160, 20, 40], dtype=np.uint8)
 _SKIN_HSV_UPPER_2 = np.array([179, 255, 255], dtype=np.uint8)
 
 DEFAULT_CROP_SIZE_PX = 200
@@ -222,3 +222,37 @@ def measure_width_at_row(mask: np.ndarray, row: int) -> float:
     ends = np.where(diffs == -1)[0]
     run_lengths = ends - starts
     return float(run_lengths.max()) if run_lengths.size else 0.0
+
+
+def measure_width_perpendicular(
+    mask: np.ndarray,
+    center_px: tuple[float, float],
+    arm_angle_degrees: float,
+) -> float:
+    """Arm width along the line through ``center_px`` perpendicular to the arm axis."""
+    if mask is None or mask.size == 0:
+        return 0.0
+    height, width = mask.shape[:2]
+    cx = float(np.clip(center_px[0], 0, width - 1))
+    cy = float(np.clip(center_px[1], 0, height - 1))
+    # Rotate so the arm axis is vertical; a horizontal row is then the width.
+    delta = float(arm_angle_degrees) - 90.0
+    matrix = cv2.getRotationMatrix2D((cx, cy), delta, 1.0)
+    rotated = cv2.warpAffine(mask, matrix, (width, height), flags=cv2.INTER_NEAREST)
+    return measure_width_at_row(rotated, int(round(cy)))
+
+
+def fill_polygon_on_mask(
+    mask: np.ndarray,
+    polygon_xy: np.ndarray,
+    origin_px: tuple[int, int],
+) -> np.ndarray:
+    """Paint a full-image polygon onto a crop mask (e.g. the ArUco sticker)."""
+    if mask is None or polygon_xy is None:
+        return mask
+    pts = np.asarray(polygon_xy, dtype=np.float32).reshape(-1, 2)
+    ox, oy = origin_px
+    local = np.round(pts - np.array([ox, oy], dtype=np.float32)).astype(np.int32)
+    filled = mask.copy()
+    cv2.fillConvexPoly(filled, local, 255)
+    return filled

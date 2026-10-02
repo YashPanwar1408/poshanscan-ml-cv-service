@@ -28,10 +28,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.pipeline.classify import classify_risk_band  # noqa: E402
-from app.pipeline.estimate import CalibrationCorrector, estimate_muac  # noqa: E402
-from app.pipeline.pose_localize import locate_arm_midpoint  # noqa: E402
-from app.pipeline.reference_detect import detect_reference_marker  # noqa: E402
-from app.pipeline.segment import measure_width_at_row, segment_arm  # noqa: E402
+from app.pipeline.estimate import CalibrationCorrector  # noqa: E402
+from app.pipeline.run import run_muac_pipeline  # noqa: E402
 
 REQUIRED_COLUMNS = ("image_path", "reference_size_mm", "tape_measurement_mm")
 
@@ -46,36 +44,15 @@ def load_image_bgr(path: Path) -> Optional[np.ndarray]:
     return cv2.imdecode(payload, cv2.IMREAD_COLOR)
 
 
-def locate_either_arm(image: np.ndarray) -> dict[str, Any]:
-    left = locate_arm_midpoint(image, side="left")
-    if left.get("detected"):
-        return left
-    return locate_arm_midpoint(image, side="right")
-
-
 def run_baseline_pipeline(
     image: np.ndarray,
     reference_size_mm: float,
 ) -> tuple[Optional[float], str]:
     """Return ``(baseline_muac_mm, status)``. status is ``ok`` or an error code."""
-    reference = detect_reference_marker(image, float(reference_size_mm))
-    if not reference.get("detected") or not reference.get("scale_px_per_mm"):
-        return None, "reference_object_not_detected"
-
-    pose = locate_either_arm(image)
-    if not pose.get("detected") or pose.get("midpoint_px") is None:
-        return None, "arm_not_detected"
-
-    segmented = segment_arm(image, pose["midpoint_px"])
-    mask = segmented["mask"]
-    centroid = segmented.get("centroid_px")
-    row = int(round(centroid[1])) if centroid is not None else mask.shape[0] // 2
-    width_px = measure_width_at_row(mask, row)
-    estimated = estimate_muac(width_px, float(reference["scale_px_per_mm"]))
-    muac_mm = estimated.get("muac_estimate_mm")
-    if muac_mm is None:
-        return None, "estimation_failed"
-    return float(muac_mm), "ok"
+    result = run_muac_pipeline(image, float(reference_size_mm))
+    if not result.get("ok"):
+        return None, str(result.get("error") or "pipeline_failed")
+    return float(result["muac_estimate_mm"]), "ok"
 
 
 def compute_metrics(

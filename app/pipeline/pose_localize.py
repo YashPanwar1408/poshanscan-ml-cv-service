@@ -14,7 +14,7 @@ _RIGHT_SHOULDER = 12
 _LEFT_ELBOW = 13
 _RIGHT_ELBOW = 14
 
-_MIN_LANDMARK_VISIBILITY = 0.3
+_MIN_LANDMARK_VISIBILITY = 0.15
 
 _pose_lock = threading.Lock()
 _pose_model: Any = None
@@ -70,7 +70,8 @@ def _get_pose() -> Any:
                 static_image_mode=True,
                 model_complexity=1,
                 enable_segmentation=False,
-                min_detection_confidence=0.5,
+                min_detection_confidence=0.3,
+                min_tracking_confidence=0.3,
             )
     return _pose_model
 
@@ -190,3 +191,62 @@ def localize_measurement_site(
     """Compatibility wrapper returning only the MUAC midpoint, or None."""
     result = locate_arm_midpoint(image, side=side)
     return result["midpoint_px"] if result["detected"] else None
+
+
+def _marker_center(marker_corners: np.ndarray) -> tuple[float, float]:
+    pts = np.asarray(marker_corners, dtype=np.float64).reshape(4, 2)
+    return float(pts[:, 0].mean()), float(pts[:, 1].mean())
+
+
+def _skin_axis_angle_degrees(
+    image: np.ndarray,
+    center_px: tuple[float, float],
+    window_px: int = 400,
+) -> float:
+    """Estimate the arm's long-axis angle from skin pixels around a point."""
+    bgr = _to_bgr(np.asarray(image))
+    height, width = bgr.shape[:2]
+    cx, cy = int(round(center_px[0])), int(round(center_px[1]))
+    half = max(window_px // 2, 80)
+    x0, y0 = max(0, cx - half), max(0, cy - half)
+    x1, y1 = min(width, cx + half), min(height, cy + half)
+    crop = bgr[y0:y1, x0:x1]
+    if crop.size == 0:
+        return 90.0
+
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    skin = cv2.inRange(hsv, np.array([0, 20, 40], dtype=np.uint8), np.array([25, 255, 255], dtype=np.uint8))
+    skin2 = cv2.inRange(hsv, np.array([160, 20, 40], dtype=np.uint8), np.array([179, 255, 255], dtype=np.uint8))
+    skin = cv2.bitwise_or(skin, skin2)
+    ys, xs = np.where(skin > 0)
+    if xs.size < 80:
+        return 90.0
+    pts = np.column_stack((xs.astype(np.float32), ys.astype(np.float32)))
+    line = cv2.fitLine(pts, cv2.DIST_L2, 0, 0.01, 0.01).flatten()
+    vx, vy = float(line[0]), float(line[1])
+    return float(np.degrees(np.arctan2(vy, vx)))
+
+
+def locate_from_marker(
+    image: np.ndarray,
+    marker_corners: np.ndarray,
+) -> ArmMidpointResult:
+    """Fallback MUAC site: the ArUco marker is placed on the mid-upper arm.
+
+    Used when MediaPipe Pose cannot see a full body (close-up arm photos).
+    """
+    if _is_empty_image(image) or marker_corners is None:
+        return _empty_result()
+    try:
+        mid = _marker_center(marker_corners)
+    except Exception:
+        return _empty_result()
+    angle = _skin_axis_angle_degrees(image, mid)
+    return {
+        "detected": True,
+        "midpoint_px": mid,
+        "shoulder_px": None,
+        "elbow_px": None,
+        "arm_angle_degrees": angle,
+        "confidence": 0.40,
+    }

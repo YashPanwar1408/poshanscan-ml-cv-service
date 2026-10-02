@@ -8,6 +8,7 @@ import pytest
 from app.pipeline.pose_localize import (
     arm_axis_angle_degrees,
     locate_arm_midpoint,
+    locate_from_marker,
     midpoint_px,
 )
 from app.pipeline.segment import measure_width_at_row, segment_arm
@@ -36,6 +37,18 @@ def test_midpoint_and_arm_angle_helpers() -> None:
     assert mid == pytest.approx((100.0, 130.0))
     # Vertical arm pointing down → ~90° in image coordinates.
     assert arm_axis_angle_degrees(shoulder, elbow) == pytest.approx(90.0, abs=1e-6)
+
+
+def test_locate_from_marker_uses_sticker_center() -> None:
+    image = _synthetic_arm_image()
+    corners = np.array(
+        [[180.0, 180.0], [220.0, 180.0], [220.0, 220.0], [180.0, 220.0]],
+        dtype=np.float32,
+    )
+    result = locate_from_marker(image, corners)
+    assert result["detected"] is True
+    assert result["midpoint_px"] == pytest.approx((200.0, 200.0))
+    assert result["arm_angle_degrees"] is not None
 
 
 def test_locate_arm_midpoint_handles_synthetic_image() -> None:
