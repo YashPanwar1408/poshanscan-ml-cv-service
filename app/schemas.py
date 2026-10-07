@@ -2,6 +2,8 @@
 
 from pydantic import BaseModel, Field
 
+from app.pipeline.classify import AgeCategory  # re-exported for API layer
+
 
 PIPELINE_VERSION = "v1.0"
 
@@ -18,7 +20,8 @@ class InferResponse(BaseModel):
     """Successful POST /infer payload."""
 
     muac_estimate_mm: float = Field(..., description="Estimated MUAC in millimetres.")
-    risk_band: str = Field(..., description='WHO band: "Normal", "MAM", or "SAM".')
+    risk_band: str = Field(..., description='Classification band (e.g. "Normal", "MAM"/"Moderate", "SAM"/"Severe").')
+    age_category: str = Field(..., description='Age category used for classification: "child_6_59m" or "adult".')
     confidence_score: float = Field(..., ge=0.0, le=1.0)
     quality_flags: QualityFlags
     pipeline_version: str = Field(default=PIPELINE_VERSION)

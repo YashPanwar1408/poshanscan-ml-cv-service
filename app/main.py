@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Optional
 
 import cv2
 import numpy as np
@@ -11,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from app.pipeline.run import run_muac_pipeline
+from app.pipeline.classify import AgeCategory
 from app.schemas import (
     PIPELINE_VERSION,
     ErrorResponse,
@@ -79,11 +81,25 @@ def health() -> HealthResponse:
 )
 async def infer(
     image: UploadFile = File(..., description="Photo of the upper arm with a reference marker."),
+    age_category: Optional[str] = Form(None, description="Age category: 'child_6_59m' (WHO 6-59 month) or 'adult' (adult/maternal screening). REQUIRED."),
     reference_type: str = Form("aruco", description="Reference object type (currently only aruco)."),
     reference_size_mm: float = Form(50.0, description="Printed marker edge length in millimetres."),
 ) -> InferResponse | JSONResponse:
     """Run the MUAC pipeline on an uploaded image."""
     try:
+        # Validate age_category before any expensive work — never infer or default.
+        _age_category_err = _error(
+            422,
+            "age_category_required",
+            "age_category must be specified as 'child_6_59m' or 'adult'.",
+        )
+        if not age_category:
+            return _age_category_err
+        try:
+            validated_age_category = AgeCategory(age_category)
+        except (ValueError, KeyError):
+            return _age_category_err
+
         payload = await image.read()
         bgr = _decode_image(payload)
         if bgr is None:
@@ -99,7 +115,7 @@ async def infer(
                 reference_type,
             )
 
-        result = run_muac_pipeline(bgr, float(reference_size_mm))
+        result = run_muac_pipeline(bgr, float(reference_size_mm), validated_age_category.value)
         if not result.get("ok"):
             return _error(
                 422,
@@ -110,6 +126,7 @@ async def infer(
         return InferResponse(
             muac_estimate_mm=float(result["muac_estimate_mm"]),
             risk_band=str(result["risk_band"]),
+            age_category=str(result["age_category"]),
             confidence_score=float(result["confidence_score"]),
             quality_flags=QualityFlags(
                 reference_detected=True,

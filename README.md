@@ -87,6 +87,7 @@ Runs the full MUAC pipeline on an uploaded image.
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `image` | file | ✅ | — | Photo of the upper arm with a reference marker in frame |
+| `age_category` | string | ✅ | — | Either `"child_6_59m"` (WHO 6–59 month paediatric screening) or `"adult"` (adult/maternal MUAC scale). **No other value is accepted.** |
 | `reference_type` | string | ❌ | `aruco` | Reference object type (currently only `aruco` is implemented) |
 | `reference_size_mm` | number | ❌ | `50` | Printed marker edge length, in millimetres |
 
@@ -94,6 +95,7 @@ Runs the full MUAC pipeline on an uploaded image.
 curl -X POST https://poshanscan-ml-cv-service.onrender.com/infer \
   -H "accept: application/json" \
   -F "image=@arm_photo.jpg;type=image/jpeg" \
+  -F "age_category=child_6_59m" \
   -F "reference_type=aruco" \
   -F "reference_size_mm=50"
 ```
@@ -103,6 +105,7 @@ curl -X POST https://poshanscan-ml-cv-service.onrender.com/infer \
 {
   "muac_estimate_mm": 118.6,
   "risk_band": "MAM",
+  "age_category": "child_6_59m",
   "confidence_score": 0.87,
   "quality_flags": {
     "reference_detected": true,
@@ -115,22 +118,35 @@ curl -X POST https://poshanscan-ml-cv-service.onrender.com/infer \
 
 | Field | Meaning |
 |---|---|
-| `risk_band` | One of `"Normal"`, `"MAM"`, `"SAM"` — WHO MUAC screening bands for children 6–59 months |
+| `risk_band` | Classification band. For `child_6_59m`: `"Normal"`, `"MAM"`, `"SAM"`. For `adult`: `"Normal"`, `"Moderate"`, `"Severe"` |
+| `age_category` | The category applied — `"child_6_59m"` or `"adult"` — echoed back so the response is self-documenting |
 | `confidence_score` | `0.0`–`1.0`, a weighted combination of marker, pose, and segmentation confidence (§ below) |
 | `quality_flags` | Per-stage pass/fail, useful for debugging a low-confidence result |
 
 **Response — `422 Unprocessable Entity`** (bad capture — the client should prompt a retake)
 ```json
+{ "error": "age_category_required", "message": "age_category must be specified as 'child_6_59m' or 'adult'." }
+```
+or
+```json
 { "error": "reference_object_not_detected", "message": "No ArUco reference marker was found in the image." }
 ```
 or
 ```json
-{ "error": "arm_not_detected", "message": "Could not localise a shoulder–elbow pair for MUAC measurement." }
+{ "error": "arm_not_detected", "message": "Could not localise a shoulder\u2013elbow pair for MUAC measurement." }
 ```
 
 **Response — `500 Internal Server Error`** — any unexpected failure, returned as a structured error rather than a raw stack trace.
 
 Full interactive schema, including the `Body_infer_infer_post`, `InferResponse`, `ErrorResponse`, `HealthResponse`, and `QualityFlags` models, is available at [`/docs`](https://poshanscan-ml-cv-service.onrender.com/docs).
+
+### Why only two `age_category` values?
+
+MUAC cutoffs are not universal — they are calibrated against age- and sex-specific population references, and using the wrong scale can silently misclassify someone as normal when they are malnourished, or flag a false alarm.
+
+- **`child_6_59m`** uses the WHO community-screening cutoffs (SAM < 115 mm, MAM 115–124.9 mm, Normal ≥ 125 mm) from the 2009 WHO guidance on community-based management of SAM. These are the globally accepted field thresholds for that age window.
+- **`adult`** uses the published adult/maternal MUAC screening scale (Severe < 210 mm, Moderate 210–229 mm, Normal ≥ 230 mm), calibrated against BMI < 16.5 kg/m² and < 18.5 kg/m² respectively (Ferro-Luzzi & James 1996; Collins et al. 2000). This scale is used in MSF/UNHCR field nutrition protocols for adults and pregnant/lactating women.
+- **Ages 5–19 years are explicitly not supported.** No single globally standardised MUAC-only cutoff exists for the 5–19 year bracket. WHO recommends BMI-for-age z-scores (BAZ) for that range, which requires sex and precise age — neither of which this system collects. Accepting an ambiguous "adolescent" category and applying either child or adult cutoffs would produce unsafe results, so the API rejects all values other than `"child_6_59m"` and `"adult"` with a clear error.
 
 ---
 
@@ -250,7 +266,7 @@ python scripts/evaluate.py --csv data/eval.csv --output results/eval.csv
 python scripts/evaluate.py --csv data/eval.csv --with-correction \
   --model app/models/calibration.joblib --output results/eval_corrected.csv
 ```
-`data/eval.csv` needs columns: `image_path, reference_size_mm, tape_measurement_mm`. Reports MAE, RMSE, signed bias, and WHO screening-band agreement against manual tape measurement — the ground truth this system is evaluated against, never assumed.
+`data/eval.csv` needs columns: `image_path, reference_size_mm, tape_measurement_mm, age_category`. The `age_category` column must be `child_6_59m` or `adult` for each row; rows with any other value are skipped with an error. Reports MAE, RMSE, signed bias, and WHO screening-band agreement against manual tape measurement — the ground truth this system is evaluated against, never assumed.
 
 ---
 
@@ -279,6 +295,7 @@ Deployed as a Docker web service on **Render** (free tier) directly from the `Do
 - **Segmentation baseline is classical CV (HSV + GrabCut), not a trained model yet.** The substitution point for a learned segmentation model (e.g. YOLOv8-seg) is explicitly marked with a `TODO` in `segment.py`, and the function signature is already stable for that swap.
 - **The elliptical circumference model is the main source of systematic error** — a 2-D photo cannot directly observe a 3-D circumference. The `CalibrationCorrector` exists specifically to measure and correct this once paired camera/tape data is collected.
 - **Field accuracy (MAE/RMSE/band agreement) against real tape measurements is not yet published** — the evaluation tooling is implemented and tested; real accuracy numbers will be added once the paired calibration dataset is collected.
+- **Ages 5–19 years (school-age children and adolescents) are not supported.** No single globally standardised MUAC-only cutoff exists for that age bracket — WHO recommends BMI-for-age z-scores (BAZ), which requires sex and precise age and is not implemented here. The API deliberately rejects any `age_category` value other than `"child_6_59m"` and `"adult"` to prevent silent misclassification.
 - This service is a **screening aid, not a diagnostic tool** — any Moderate/Severe result is intended to prompt the same manual confirmation and referral process a tape reading would.
 
 ---

@@ -46,10 +46,46 @@ def test_estimate_muac_invalid_scale() -> None:
     ],
 )
 def test_classify_risk_band_boundaries(muac_mm: float, band: str, color: str) -> None:
-    result = classify_risk_band(muac_mm)
+    result = classify_risk_band(muac_mm, "child_6_59m")
     assert result["risk_band"] == band
     assert result["color"] == color
     assert result["muac_mm"] == pytest.approx(muac_mm)
+    assert result["age_category"] == "child_6_59m"
+
+
+@pytest.mark.parametrize(
+    ("muac_mm", "band", "color"),
+    [
+        (209.9, "Severe", "red"),
+        (210.0, "Moderate", "yellow"),
+        (229.9, "Moderate", "yellow"),
+        (230.0, "Normal", "green"),
+        (250.0, "Normal", "green"),
+    ],
+)
+def test_classify_risk_band_adult_boundaries(muac_mm: float, band: str, color: str) -> None:
+    result = classify_risk_band(muac_mm, "adult")
+    assert result["risk_band"] == band
+    assert result["color"] == color
+    assert result["muac_mm"] == pytest.approx(muac_mm)
+    assert result["age_category"] == "adult"
+
+
+@pytest.mark.parametrize(
+    "bad_category",
+    [
+        "teenager",
+        "child",
+        "5_19y",
+        "",
+        None,
+        "ADULT",  # case-sensitive — must be exact
+    ],
+)
+def test_classify_risk_band_invalid_age_category_raises(bad_category: object) -> None:
+    """classify_risk_band must raise ValueError for any unsupported age_category."""
+    with pytest.raises(ValueError, match="age_category must be 'child_6_59m' or 'adult'"):
+        classify_risk_band(120.0, bad_category)  # type: ignore[arg-type]
 
 
 def test_compute_confidence_score_weighted_average() -> None:

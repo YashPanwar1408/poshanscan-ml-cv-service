@@ -62,8 +62,20 @@ def _segmentation_quality(mask: np.ndarray) -> float:
 def run_muac_pipeline(
     image: np.ndarray,
     reference_size_mm: float,
+    age_category: str = "child_6_59m",
 ) -> dict[str, Any]:
     """Run reference → pose (or marker fallback) → segment → estimate → classify.
+
+    Parameters
+    ----------
+    image:
+        BGR image as a numpy array.
+    reference_size_mm:
+        Physical size of the ArUco marker edge in millimetres.
+    age_category:
+        Must be ``"child_6_59m"`` or ``"adult"``.  Passed directly to
+        :func:`classify_risk_band`; a ``ValueError`` from that function
+        propagates up to the caller.
 
     Returns a dict with ``ok`` True on success, or ``ok`` False and ``error`` set.
     """
@@ -136,7 +148,7 @@ def run_muac_pipeline(
     if baseline_mm is None:
         baseline_mm = 0.0
     muac_mm = _calibrator.predict(float(baseline_mm))
-    classified = classify_risk_band(muac_mm)
+    classified = classify_risk_band(muac_mm, age_category)
     confidence = compute_confidence_score(
         float(reference.get("confidence") or 0.0),
         float(pose.get("confidence") or 0.0),
@@ -155,6 +167,7 @@ def run_muac_pipeline(
         "message": "",
         "muac_estimate_mm": float(muac_mm),
         "risk_band": classified["risk_band"],
+        "age_category": classified["age_category"],
         "confidence_score": confidence,
         "segmentation_ok": seg_ok,
         "arm_detected": True,

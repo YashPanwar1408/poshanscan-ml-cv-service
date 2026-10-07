@@ -31,7 +31,7 @@ from app.pipeline.classify import classify_risk_band  # noqa: E402
 from app.pipeline.estimate import CalibrationCorrector  # noqa: E402
 from app.pipeline.run import run_muac_pipeline  # noqa: E402
 
-REQUIRED_COLUMNS = ("image_path", "reference_size_mm", "tape_measurement_mm")
+REQUIRED_COLUMNS = ("image_path", "reference_size_mm", "tape_measurement_mm", "age_category")
 
 
 def load_image_bgr(path: Path) -> Optional[np.ndarray]:
@@ -58,6 +58,7 @@ def run_baseline_pipeline(
 def compute_metrics(
     predictions_mm: Sequence[float],
     tape_mm: Sequence[float],
+    age_categories: Sequence[str],
 ) -> dict[str, float]:
     """MAE, RMSE, bias (mean signed error: pred − tape), band agreement rate."""
     preds = np.asarray(predictions_mm, dtype=np.float64)
@@ -75,8 +76,14 @@ def compute_metrics(
     mae = float(np.mean(np.abs(errors)))
     rmse = float(np.sqrt(np.mean(errors**2)))
     bias = float(np.mean(errors))
-    pred_bands = [classify_risk_band(float(p))["risk_band"] for p in preds]
-    tape_bands = [classify_risk_band(float(t))["risk_band"] for t in tapes]
+    pred_bands = [
+        classify_risk_band(float(p), age_cat)["risk_band"]
+        for p, age_cat in zip(preds, age_categories)
+    ]
+    tape_bands = [
+        classify_risk_band(float(t), age_cat)["risk_band"]
+        for t, age_cat in zip(tapes, age_categories)
+    ]
     agreement = float(sum(a == b for a, b in zip(pred_bands, tape_bands)) / len(pred_bands))
     return {
         "n": float(preds.size),
@@ -196,6 +203,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     corrected_preds: list[float] = []
     tapes_ok: list[float] = []
     tapes_ok_corrected: list[float] = []
+    age_categories_ok: list[str] = []
+    age_categories_ok_corrected: list[str] = []
 
     print(f"Evaluating {len(labelled)} rows from {csv_path}")
     for index, row in enumerate(labelled, start=1):
@@ -207,10 +216,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             result_rows.append(
                 _result_record(
                     image_raw, row.get("reference_size_mm"), row.get("tape_measurement_mm"),
+                    age_category=row.get("age_category", ""),
                     status="invalid_row",
                     message="reference_size_mm or tape_measurement_mm is not a number",
                 )
             )
+            continue
+
+        age_category = row.get("age_category", "").strip()
+        if age_category not in ("child_6_59m", "adult"):
+            result_rows.append(
+                _result_record(
+                    image_raw, row.get("reference_size_mm"), row.get("tape_measurement_mm"),
+                    age_category=age_category,
+                    status="invalid_row",
+                    message=f"age_category must be 'child_6_59m' or 'adult', got {age_category!r}",
+                )
+            )
+            print(f"  [{index}/{len(labelled)}] FAIL invalid_row (age_category)  {image_raw}")
             continue
 
         image_path = resolve_image_path(image_raw, csv_dir)
@@ -221,7 +244,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     str(image_path),
                     reference_size_mm,
                     tape_mm,
-                    tape_band=classify_risk_band(tape_mm)["risk_band"],
+                    age_category=age_category,
+                    tape_band=classify_risk_band(tape_mm, age_category)["risk_band"],
                     status="image_not_found",
                     message=f"Could not read image: {image_path}",
                 )
@@ -230,13 +254,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             continue
 
         baseline_mm, status = run_baseline_pipeline(image, reference_size_mm)
-        tape_band = classify_risk_band(tape_mm)["risk_band"]
+        tape_band = classify_risk_band(tape_mm, age_category)["risk_band"]
         if status != "ok" or baseline_mm is None:
             result_rows.append(
                 _result_record(
                     str(image_path),
                     reference_size_mm,
                     tape_mm,
+                    age_category=age_category,
                     tape_band=tape_band,
                     status=status,
                     message=status,
@@ -245,26 +270,29 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"  [{index}/{len(labelled)}] FAIL {status}  {image_path.name}")
             continue
 
-        baseline_band = classify_risk_band(baseline_mm)["risk_band"]
+        baseline_band = classify_risk_band(baseline_mm, age_category)["risk_band"]
         baseline_error = baseline_mm - tape_mm
         baseline_preds.append(baseline_mm)
         tapes_ok.append(tape_mm)
+        age_categories_ok.append(age_category)
 
         corrected_mm = None
         corrected_band = None
         corrected_error = None
         if corrector is not None:
             corrected_mm = corrector.predict(baseline_mm)
-            corrected_band = classify_risk_band(corrected_mm)["risk_band"]
+            corrected_band = classify_risk_band(corrected_mm, age_category)["risk_band"]
             corrected_error = corrected_mm - tape_mm
             corrected_preds.append(corrected_mm)
             tapes_ok_corrected.append(tape_mm)
+            age_categories_ok_corrected.append(age_category)
 
         result_rows.append(
             _result_record(
                 str(image_path),
                 reference_size_mm,
                 tape_mm,
+                age_category=age_category,
                 tape_band=tape_band,
                 baseline_muac_mm=baseline_mm,
                 baseline_band=baseline_band,
@@ -288,10 +316,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     write_results_csv(output_path, result_rows)
 
     print()
-    print(format_metrics("Baseline", compute_metrics(baseline_preds, tapes_ok)))
+    print(format_metrics("Baseline", compute_metrics(baseline_preds, tapes_ok, age_categories_ok)))
     if corrector is not None:
         print()
-        print(format_metrics("Corrected", compute_metrics(corrected_preds, tapes_ok_corrected)))
+        print(format_metrics("Corrected", compute_metrics(corrected_preds, tapes_ok_corrected, age_categories_ok_corrected)))
     print()
     print(f"Wrote per-image results to {output_path}")
     n_fail = sum(1 for row in result_rows if row["status"] != "ok")
@@ -304,6 +332,7 @@ def _result_record(
     reference_size_mm: Any,
     tape_measurement_mm: Any,
     *,
+    age_category: str = "",
     tape_band: Optional[str] = None,
     baseline_muac_mm: Optional[float] = None,
     baseline_band: Optional[str] = None,
@@ -318,6 +347,7 @@ def _result_record(
         "image_path": image_path,
         "reference_size_mm": reference_size_mm,
         "tape_measurement_mm": tape_measurement_mm,
+        "age_category": age_category,
         "tape_band": tape_band or "",
         "baseline_muac_mm": _fmt(baseline_muac_mm),
         "baseline_band": baseline_band or "",
